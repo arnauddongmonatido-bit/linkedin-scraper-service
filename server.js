@@ -38,7 +38,9 @@ if (!BROWSERBASE_API_KEY) {
 const bb = new Browserbase({ apiKey: BROWSERBASE_API_KEY });
 
 function requireAppSecret(req, res, next) {
-  const provided = req.header("x-app-key");
+  // Accepte la clé soit dans le header x-app-key (utilisé par Lovable/GPT),
+  // soit en paramètre ?key= (pratique pour un test rapide depuis un navigateur/outil).
+  const provided = req.header("x-app-key") || req.query.key;
   if (!APP_SECRET || provided !== APP_SECRET) {
     return res.status(401).json({ error: "Non autorisé." });
   }
