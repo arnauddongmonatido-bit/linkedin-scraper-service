@@ -15,9 +15,8 @@
  *
  * ATTENTION : les sélecteurs CSS utilisés ci-dessous pour lire la page sont
  * une base de départ raisonnable, mais LinkedIn peut changer la structure de
- * sa page sans préavis. Si l'extraction ne renvoie rien, ouvre la page
- * manuellement dans Chrome, fais un clic droit > Inspecter sur une carte de
- * publicité, et ajuste les sélecteurs dans la fonction extractAdsFromPage().
+ * sa page sans préavis. Utilise la route /debug-html pour inspecter le HTML
+ * réellement rendu et ajuster extractAdsFromPage() en conséquence.
  */
 
 import express from "express";
@@ -29,7 +28,7 @@ const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
-const APP_SECRET = process.env.APP_SECRET; // clé que toi seul connais, vérifiée sur chaque requête
+const APP_SECRET = process.env.APP_SECRET;
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
 
 if (!BROWSERBASE_API_KEY) {
@@ -38,7 +37,6 @@ if (!BROWSERBASE_API_KEY) {
 
 const bb = new Browserbase({ apiKey: BROWSERBASE_API_KEY });
 
-// --- Middleware d'authentification simple ---
 function requireAppSecret(req, res, next) {
   const provided = req.header("x-app-key");
   if (!APP_SECRET || provided !== APP_SECRET) {
@@ -47,10 +45,6 @@ function requireAppSecret(req, res, next) {
   next();
 }
 
-/**
- * Construit l'URL de recherche publique de l'Ad Library, exactement comme
- * si un utilisateur avait tapé le nom de l'entreprise dans le champ de recherche.
- */
 function buildAdLibraryUrl(company, country) {
   const params = new URLSearchParams();
   params.set("accountOwner", company);
@@ -58,11 +52,6 @@ function buildAdLibraryUrl(company, country) {
   return `https://www.linkedin.com/ad-library/search?${params.toString()}`;
 }
 
-/**
- * Ouvre la page dans le navigateur distant Browserbase, attend le chargement
- * des résultats, scrolle pour déclencher le lazy-loading, puis extrait les
- * données des cartes d'annonces affichées.
- */
 async function scrapeAdLibrary(company, country, maxScrolls = 6) {
   const session = await bb.sessions.create();
   const browser = await chromium.connectOverCDP(session.connectUrl);
@@ -73,11 +62,8 @@ async function scrapeAdLibrary(company, country, maxScrolls = 6) {
 
     const url = buildAdLibraryUrl(company, country);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-
-    // Laisse le temps au JS de charger les premiers résultats.
     await page.waitForTimeout(3000);
 
-    // Ferme une éventuelle bannière de cookies si elle apparaît (best-effort).
     try {
       const cookieButton = page.locator('button:has-text("Accept"), button:has-text("Accepter")').first();
       if (await cookieButton.isVisible({ timeout: 2000 })) {
@@ -87,28 +73,20 @@ async function scrapeAdLibrary(company, country, maxScrolls = 6) {
       // pas de bannière, on continue
     }
 
-    // Scrolle plusieurs fois pour charger davantage de résultats (infinite scroll).
     for (let i = 0; i < maxScrolls; i++) {
       await page.mouse.wheel(0, 2000);
       await page.waitForTimeout(1500);
     }
 
     const ads = await extractAdsFromPage(page);
-
     return { ads, sourceUrl: url };
   } finally {
     await browser.close();
   }
 }
 
-/**
- * Extrait les annonces visibles sur la page. À AJUSTER si LinkedIn change sa
- * structure : ouvre la page dans un vrai navigateur, inspecte une carte de
- * pub, et adapte les sélecteurs ci-dessous.
- */
 async function extractAdsFromPage(page) {
   return page.evaluate(() => {
-    // Sélecteur de base : les cartes d'annonces de l'Ad Library. À vérifier/adapter.
     const cards = Array.from(document.querySelectorAll('[data-testid*="ad-library"], .ad-library-card, article'));
 
     return cards
@@ -119,7 +97,6 @@ async function extractAdsFromPage(page) {
         const img = card.querySelector("img");
         const video = card.querySelector("video");
         const link = card.querySelector('a[href*="/ad-library/detail/"]');
-
         const headline = card.querySelector('p, [data-testid*="headline"]')?.textContent?.trim() || null;
 
         return {
@@ -134,14 +111,11 @@ async function extractAdsFromPage(page) {
   });
 }
 
-// --- Endpoint principal : recherche des annonces d'une entreprise ---
 app.get("/search-ads", requireAppSecret, async (req, res) => {
   const { company, country } = req.query;
-
   if (!company) {
     return res.status(400).json({ error: "Le paramètre 'company' est requis." });
   }
-
   try {
     const result = await scrapeAdLibrary(company, country);
     res.json(result);
@@ -151,25 +125,57 @@ app.get("/search-ads", requireAppSecret, async (req, res) => {
   }
 });
 
-// --- Endpoint de téléchargement : proxy pour éviter les soucis de CORS ---
 app.get("/download-asset", requireAppSecret, async (req, res) => {
   const { url } = req.query;
   if (!url || !url.startsWith("https://media.licdn.com/")) {
     return res.status(400).json({ error: "URL de média invalide." });
   }
-
   try {
     const upstream = await fetch(url);
     if (!upstream.ok) throw new Error(`Statut upstream ${upstream.status}`);
-
     res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
     res.setHeader("Content-Disposition", "attachment; filename=\"visuel-linkedin-ads.jpg\"");
-
     const buffer = Buffer.from(await upstream.arrayBuffer());
     res.send(buffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Échec du téléchargement du visuel.", detail: String(err) });
+  }
+});
+
+// --- Endpoint de diagnostic temporaire : renvoie le HTML brut rendu par le navigateur ---
+// Sert uniquement à identifier les bons sélecteurs CSS. À retirer une fois le scraping stabilisé.
+app.get("/debug-html", requireAppSecret, async (req, res) => {
+  const { company, country } = req.query;
+  if (!company) {
+    return res.status(400).json({ error: "Le paramètre 'company' est requis." });
+  }
+
+  const session = await bb.sessions.create();
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+
+  try {
+    const context = browser.contexts()[0];
+    const page = context.pages()[0];
+    const url = buildAdLibraryUrl(company, country);
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(4000);
+
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.wheel(0, 2000);
+      await page.waitForTimeout(1000);
+    }
+
+    const html = await page.content();
+    const title = await page.title();
+
+    res.json({ url, title, htmlLength: html.length, html });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: String(err) });
+  } finally {
+    await browser.close();
   }
 });
 
