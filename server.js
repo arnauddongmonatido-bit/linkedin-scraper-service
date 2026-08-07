@@ -161,12 +161,12 @@ app.get("/debug-scan", requireAppSecret, async (req, res) => {
     const page = context.pages()[0];
     const url = buildAdLibraryUrl(company, country);
 
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(5000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.waitForTimeout(1500);
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 2; i++) {
       await page.mouse.wheel(0, 2000);
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(600);
     }
 
     const scan = await page.evaluate(() => {
