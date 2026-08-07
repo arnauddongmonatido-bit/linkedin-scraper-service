@@ -145,9 +145,9 @@ app.get("/download-asset", requireAppSecret, async (req, res) => {
   }
 });
 
-// --- Endpoint de diagnostic temporaire : renvoie le HTML brut rendu par le navigateur ---
+// --- Endpoint de diagnostic temporaire : scanne la page pour trouver la vraie structure ---
 // Sert uniquement à identifier les bons sélecteurs CSS. À retirer une fois le scraping stabilisé.
-app.get("/debug-html", requireAppSecret, async (req, res) => {
+app.get("/debug-scan", requireAppSecret, async (req, res) => {
   const { company, country } = req.query;
   if (!company) {
     return res.status(400).json({ error: "Le paramètre 'company' est requis." });
@@ -162,17 +162,51 @@ app.get("/debug-html", requireAppSecret, async (req, res) => {
     const url = buildAdLibraryUrl(company, country);
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await page.mouse.wheel(0, 2000);
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1200);
     }
 
-    const html = await page.content();
-    const title = await page.title();
+    const scan = await page.evaluate(() => {
+      const truncate = (s, n = 400) => (s || "").slice(0, n);
 
-    res.json({ url, title, htmlLength: html.length, html });
+      const adDetailLinks = Array.from(document.querySelectorAll('a[href*="/ad-library/detail/"]'));
+      const images = Array.from(document.querySelectorAll("img"));
+      const videos = Array.from(document.querySelectorAll("video"));
+      const licdnImages = images.filter((img) => (img.getAttribute("src") || "").includes("licdn.com"));
+
+      // Cherche des éléments qui contiennent un texte du type "X results" / "résultats"
+      const textMatches = Array.from(document.querySelectorAll("body *"))
+        .filter((el) => el.children.length === 0)
+        .map((el) => el.textContent.trim())
+        .filter((t) => /result|résultat|no ads|aucune/i.test(t))
+        .slice(0, 10);
+
+      // Remonte de 4 niveaux de parents depuis le premier lien d'annonce trouvé, pour voir la structure de la carte
+      let cardHtmlSample = null;
+      if (adDetailLinks[0]) {
+        let el = adDetailLinks[0];
+        for (let i = 0; i < 4 && el.parentElement; i++) el = el.parentElement;
+        cardHtmlSample = truncate(el.outerHTML, 1500);
+      }
+
+      return {
+        adDetailLinksCount: adDetailLinks.length,
+        totalImages: images.length,
+        licdnImagesCount: licdnImages.length,
+        videosCount: videos.length,
+        sampleLicdnImageSrcs: licdnImages.slice(0, 3).map((img) => img.getAttribute("src")),
+        sampleAdDetailHrefs: adDetailLinks.slice(0, 3).map((a) => a.getAttribute("href")),
+        resultTextMatches: textMatches,
+        cardHtmlSample,
+        bodyChildCount: document.body.children.length,
+        mainRootId: document.querySelector("[id]")?.id || null,
+      };
+    });
+
+    res.json({ url, ...scan });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: String(err) });
