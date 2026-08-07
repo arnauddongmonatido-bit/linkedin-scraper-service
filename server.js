@@ -89,24 +89,45 @@ async function scrapeAdLibrary(company, country, maxScrolls = 6) {
 
 async function extractAdsFromPage(page) {
   return page.evaluate(() => {
-    const cards = Array.from(document.querySelectorAll('[data-testid*="ad-library"], .ad-library-card, article'));
+    // Structure identifiée via /debug-scan le 2026-08-07 : chaque annonce est un
+    // <li class="search-result-item">, contenant un .ad-preview[data-creative-type]
+    // et un .base-ad-preview-card[aria-label="Nom annonceur, Type Ad, View details"].
+    const cards = Array.from(document.querySelectorAll("li.search-result-item"));
 
     return cards
       .map((card, index) => {
-        const advertiserName =
-          card.querySelector('[data-testid*="advertiser"], .advertiser-name, h3, h4')?.textContent?.trim() || null;
+        const preview = card.querySelector(".ad-preview");
+        const adType = preview?.getAttribute("data-creative-type") || null;
 
-        const img = card.querySelector("img");
-        const video = card.querySelector("video");
+        const previewCard = card.querySelector(".base-ad-preview-card");
+        const ariaLabel = previewCard?.getAttribute("aria-label") || "";
+        const advertiserName =
+          ariaLabel.split(",")[0]?.trim() ||
+          card.querySelector(".font-bold")?.textContent?.trim() ||
+          null;
+
+        // Le logo de l'annonceur a alt="advertiser logo" ; l'image du visuel de
+        // la pub (ou la miniature vidéo) est une autre <img> de la carte.
+        const images = Array.from(card.querySelectorAll("img"));
+        const creativeImg =
+          images.find((img) => img.getAttribute("alt") !== "advertiser logo") ||
+          images[images.length - 1];
+        const mediaUrl = creativeImg?.getAttribute("src") || null;
+
         const link = card.querySelector('a[href*="/ad-library/detail/"]');
-        const headline = card.querySelector('p, [data-testid*="headline"]')?.textContent?.trim() || null;
+        const href = link?.getAttribute("href") || null;
+        const id = href ? href.split("/").filter(Boolean).pop().split("?")[0] : `ad-${index}`;
+
+        const headline =
+          card.querySelector('[class*="commentary"], [class*="headline"], p')?.textContent?.trim() || null;
 
         return {
-          id: link?.getAttribute("href")?.split("/").pop() || `ad-${index}`,
+          id,
           advertiserName,
+          adType,
           headline,
-          mediaUrl: img?.getAttribute("src") || video?.getAttribute("poster") || null,
-          sourceLink: link ? new URL(link.getAttribute("href"), location.origin).toString() : null,
+          mediaUrl,
+          sourceLink: href ? new URL(href, "https://www.linkedin.com").toString() : null,
         };
       })
       .filter((ad) => ad.advertiserName || ad.mediaUrl);
