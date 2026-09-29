@@ -55,7 +55,13 @@ function buildAdLibraryUrl(company, country) {
 }
 
 async function scrapeAdLibrary(company, country, maxScrolls = 6) {
-  const session = await bb.sessions.create();
+  const session = await bb.sessions.create({
+    proxies: true,
+    browserSettings: {
+      solveCaptchas: true,
+      advancedStealth: true,
+    },
+  });
   const browser = await chromium.connectOverCDP(session.connectUrl);
 
   try {
@@ -64,7 +70,7 @@ async function scrapeAdLibrary(company, country, maxScrolls = 6) {
 
     const url = buildAdLibraryUrl(company, country);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await page.waitForSelector("li.search-result-item", { timeout: 25000 }).catch(() => {});
 
     try {
       const cookieButton = page.locator('button:has-text("Accept"), button:has-text("Accepter")').first();
